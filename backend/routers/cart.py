@@ -22,29 +22,36 @@ async def get_cart_identifier(request: Request, db: DBDep) -> dict:
     """Cookie'den sessionId veya token'dan userId alır."""
     # Önce token'ı kontrol et
     try:
-        # Not: security dependency'si direkt router seviyesinde değilse burada manuel çağırabiliriz
-        # Veya bu fonksiyonu opsiyonel token alacak şekilde düzenleyebiliriz.
-        # Şimdilik get_current_user_payload'u doğrudan çağırmayalım,
-        # onun yerine çereze veya isteğe bağlı token'a bakalım.
-        # token_data = await get_current_user_payload(Depends(oauth2_scheme)) # Bu burada çalışmaz
-        # Eğer kullanıcı girişi zorunluysa security dependency'si kullanılmalı.
-        # Eğer hem misafir hem kayıtlı kullanıcı sepeti olacaksa,
-        # önce çereze bakıp, token varsa kullanıcıya bağlamak daha mantıklı.
-        pass # Token kontrolü şimdilik atlandı, router'da yapılacak
-    except HTTPException:
+        # Authorization header'ından token'ı al
+        authorization = request.headers.get("Authorization")
+        if authorization and authorization.startswith("Bearer "):
+            token = authorization.split(" ")[1]
+            # Token'ı doğrula ve user_id'yi al (burada basit bir kontrol yapıyoruz)
+            # Gerçek uygulamada JWT token'ı decode etmek gerekir
+            # user_id = "some_user_id_from_token"  # Token'dan user_id çıkarılacak
+            pass  # Şimdilik token kontrolü atlandı
+    except Exception:
         pass # Token yoksa veya geçersizse devam et (misafir olabilir)
 
+    # Cookie'den session ID'yi al
     session_id = request.cookies.get("cartSessionId")
     user_id = None # Şimdilik token kontrolü yapmıyoruz
 
+    print(f"🍪 Cookie'den session ID: {session_id}")
+    print(f"👤 User ID: {user_id}")
+    print(f"🌍 Tüm cookies: {request.cookies}")
+
     # Eğer kullanıcı ID varsa önceliklendir
     if user_id:
-        return {"user": ObjectId(user_id)}
+        return {"user": ObjectId(user_id), "new_session": False}
     elif session_id:
-        return {"sessionId": session_id}
+        # Mevcut session ID'yi kullan ve yeni olmadığını belirt
+        return {"sessionId": session_id, "new_session": False}
     else:
         # Ne kullanıcı ID ne de session ID varsa, yeni session ID oluştur
-        return {"sessionId": str(uuid4())}
+        new_session_id = str(uuid4())
+        print(f"🆕 Yeni session ID oluşturuluyor: {new_session_id}")
+        return {"sessionId": new_session_id, "new_session": True}
 
 # Yardımcı fonksiyon: Sepeti hesapla ve kaydet
 async def calculate_and_save_cart(cart_doc: dict, db: DBDep) -> dict:
@@ -231,21 +238,63 @@ async def calculate_and_save_cart(cart_doc: dict, db: DBDep) -> dict:
 
     # Veritabanına kaydet/güncelle
     try:
-        if '_id' in cart_doc:
+        if '_id' in cart_doc and cart_doc['_id']:
+            # Mevcut sepeti güncelle
             cart_id = cart_doc['_id']
             if isinstance(cart_id, str) and ObjectId.is_valid(cart_id):
                 cart_id = ObjectId(cart_id)
                 
             if isinstance(cart_id, ObjectId):
-                await carts_collection.update_one({"_id": cart_id}, {"$set": cart_doc}, upsert=True)
+                print(f"💾 Sepet güncelleniyor - ID: {cart_id}")
+                # Items sayısını kontrol et
+                print(f"📦 Sepetteki item sayısı: {len(cart_doc.get('items', []))}")
+                
+                result = await carts_collection.update_one(
+                    {"_id": cart_id}, 
+                    {"$set": cart_doc}, 
+                    upsert=True
+                )
+                print(f"✅ Güncelleme sonucu: {result.matched_count} eşleşen, {result.modified_count} güncellenen")
+                
+                # Eğer upsert ile yeni eklendiyse ID'yi ayarla
+                if result.upserted_id:
+                    cart_doc['_id'] = result.upserted_id
+                    print(f"🆕 Upsert ile yeni sepet oluşturuldu: {result.upserted_id}")
+                    
         elif 'sessionId' in cart_doc:
-            await carts_collection.update_one({"sessionId": cart_doc['sessionId']}, {"$set": cart_doc}, upsert=True)
+            # Session ID ile sepeti bul/oluştur
+            print(f"💾 Sepet güncelleniyor - Session ID: {cart_doc['sessionId']}")
+            print(f"📦 Sepetteki item sayısı: {len(cart_doc.get('items', []))}")
+            
+            result = await carts_collection.update_one(
+                {"sessionId": cart_doc['sessionId']}, 
+                {"$set": cart_doc}, 
+                upsert=True
+            )
+            print(f"✅ Güncelleme sonucu: {result.matched_count} eşleşen, {result.modified_count} güncellenen")
+            
+            # Upserted ID varsa ata
+            if result.upserted_id:
+                cart_doc['_id'] = result.upserted_id
+                print(f"🆕 Session ile yeni sepet oluşturuldu: {result.upserted_id}")
         else:
             # Ne _id ne de sessionId varsa, yeni belge ekle
+            print("💾 Yeni sepet belgesi ekleniyor")
             result = await carts_collection.insert_one(cart_doc)
             cart_doc['_id'] = result.inserted_id
+            print(f"🆕 Yeni sepet eklendi - ID: {result.inserted_id}")
+            
+        # Kaydedilen sepeti kontrol et
+        saved_cart = await carts_collection.find_one({"_id": cart_doc['_id']})
+        if saved_cart:
+            print(f"✅ Sepet başarıyla kaydedildi, items sayısı: {len(saved_cart.get('items', []))}")
+        else:
+            print("❌ Sepet kaydedilmiş gibi görünmüyor!")
+            
     except Exception as e:
-        print(f"Sepet kaydedilirken hata: {e}")
+        print(f"❌ Sepet kaydedilirken hata: {e}")
+        import traceback
+        traceback.print_exc()
         # İşleme devam et, veritabanı hatası olsa bile hesaplanmış sepeti döndür
 
     # Pydantic modeli için _id'yi string'e çevir
@@ -277,21 +326,30 @@ async def get_cart(request: Request, response: Response, db: DBDep):
         identifier = await get_cart_identifier(request, db)
         carts_collection = db["carts"]
 
+        # Identifier'dan new_session'ı ayır
+        cart_identifier = {k: v for k, v in identifier.items() if k != "new_session"}
+        is_new_session = identifier.get("new_session", False)
+
+        # Session ID cookie'sini her zaman ayarla (güvence için)
+        if "sessionId" in cart_identifier:
+            session_id = cart_identifier["sessionId"]
+            print(f"🍪 [GET] Session ID cookie ZORLA ayarlanıyor: {session_id}")
+            response.set_cookie(
+                key="cartSessionId", 
+                value=session_id, 
+                max_age=60*60*24*30,  # 30 gün
+                httponly=False,       # Frontend'in cookie'ye erişebilmesi için 
+                samesite='lax',
+                secure=False,         # HTTPS olmadığı için False
+                path="/"              # Tüm path'lerde geçerli
+            )
+
         # Session ID veya user ile sepeti bul
         cart_doc = None
-        if identifier:
-            cart_doc = await carts_collection.find_one(identifier)
+        if cart_identifier:
+            cart_doc = await carts_collection.find_one(cart_identifier)
 
         if not cart_doc:
-            # Yeni session ID oluşturulduysa cookie'ye ekle
-            if "sessionId" in identifier and not request.cookies.get("cartSessionId"):
-                response.set_cookie(
-                    key="cartSessionId", 
-                    value=identifier["sessionId"], 
-                    max_age=60*60*24*30,  # 30 gün
-                    httponly=True, 
-                    samesite='lax'
-                )
                 
             # Boş sepet oluştur
             cart_doc = {
@@ -304,7 +362,7 @@ async def get_cart(request: Request, response: Response, db: DBDep):
                 "campaign": None,
                 "createdAt": datetime.now(timezone.utc),
                 "updatedAt": datetime.now(timezone.utc),
-                **identifier  # sessionId veya user ekle
+                **cart_identifier  # sessionId veya user ekle
             }
             
             # Boş sepeti DB'ye kaydet
@@ -360,7 +418,9 @@ async def get_cart(request: Request, response: Response, db: DBDep):
 async def add_item_to_cart(item_data: AddToCartRequest, request: Request, response: Response, db: DBDep):
     """Sepete yeni ürün ekler veya mevcut ürünün miktarını artırır."""
     try:
+        print(f"Sepete ekleme isteği alındı: {item_data}")
         identifier = await get_cart_identifier(request, db)
+        print(f"Cart identifier: {identifier}")
         carts_collection = db["carts"]
         products_collection = db["products"]
 
@@ -380,8 +440,14 @@ async def add_item_to_cart(item_data: AddToCartRequest, request: Request, respon
         if variant.get('stock', 0) < item_data.quantity:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Yetersiz stok. Mevcut: {variant.get('stock', 0)}")
 
+        # Identifier'dan new_session'ı ayır
+        cart_identifier = {k: v for k, v in identifier.items() if k != "new_session"}
+        is_new_session = identifier.get("new_session", False)
+        
         # Sepeti bul veya oluştur
-        cart_doc = await carts_collection.find_one(identifier)
+        cart_doc = await carts_collection.find_one(cart_identifier)
+        print(f"🔍 Bulunan sepet: {cart_doc is not None}")
+        
         if not cart_doc:
             cart_doc = {
                 "_id": ObjectId(),  # Yeni sepet için ObjectId oluştur
@@ -394,17 +460,23 @@ async def add_item_to_cart(item_data: AddToCartRequest, request: Request, respon
                 "campaign": None,
                 "createdAt": datetime.now(timezone.utc),
                 "updatedAt": datetime.now(timezone.utc),
-                **identifier
+                **cart_identifier
             }
+            print(f"🆕 Yeni sepet oluşturuldu: {cart_doc['_id']}")
             
-            if "sessionId" in identifier and not request.cookies.get("cartSessionId"):
-                response.set_cookie(
-                    key="cartSessionId",
-                    value=identifier["sessionId"],
-                    max_age=60*60*24*30,
-                    httponly=True,
-                    samesite='lax'
-                )
+        # Session ID cookie'sini her zaman ayarla (güvence için)
+        if "sessionId" in cart_identifier:
+            session_id = cart_identifier["sessionId"]
+            print(f"🍪 Session ID cookie ZORLA ayarlanıyor: {session_id}")
+            response.set_cookie(
+                key="cartSessionId",
+                value=session_id,
+                max_age=60*60*24*30,  # 30 gün
+                httponly=False,       # Frontend'in cookie'ye erişebilmesi için
+                samesite='lax',
+                secure=False,         # HTTPS olmadığı için False
+                path="/"              # Tüm path'lerde geçerli
+            )
 
         # Sepetteki item'ı bul veya oluştur
         item_index = -1
