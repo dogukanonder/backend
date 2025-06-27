@@ -37,27 +37,37 @@ async def get_cart_identifier(request: Request, db: DBDep) -> dict:
     session_id = request.cookies.get("cartSessionId")
     user_id = None # Şimdilik token kontrolü yapmıyoruz
 
-    print(f"🍪 Cookie'den session ID: {session_id}")
-    print(f"👤 User ID: {user_id}")
-    print(f"🌍 Tüm cookies: {request.cookies}")
+    print(f"🍪 [Backend] Cookie'den session ID: {session_id}")
+    print(f"👤 [Backend] User ID: {user_id}")
+    print(f"🌍 [Backend] Tüm cookies: {request.cookies}")
+    print(f"🌐 [Backend] Request headers: {dict(request.headers)}")
+    print(f"📍 [Backend] Request URL: {request.url}")
+    print(f"🔗 [Backend] Request origin: {request.headers.get('origin', 'N/A')}")
 
     # Eğer kullanıcı ID varsa önceliklendir
     if user_id:
+        print(f"✅ [Backend] User ID ile sepet erişimi: {user_id}")
         return {"user": ObjectId(user_id), "new_session": False}
     elif session_id:
         # Mevcut session ID'yi kullan ve yeni olmadığını belirt
+        print(f"✅ [Backend] Mevcut session ID ile sepet erişimi: {session_id}")
         return {"sessionId": session_id, "new_session": False}
     else:
         # Ne kullanıcı ID ne de session ID varsa, yeni session ID oluştur
         new_session_id = str(uuid4())
-        print(f"🆕 Yeni session ID oluşturuluyor: {new_session_id}")
+        print(f"🆕 [Backend] Yeni session ID oluşturuluyor: {new_session_id}")
         return {"sessionId": new_session_id, "new_session": True}
 
 # Yardımcı fonksiyon: Sepeti hesapla ve kaydet
 async def calculate_and_save_cart(cart_doc: dict, db: DBDep) -> dict:
     """Sepet toplamlarını hesaplar ve veritabanına kaydeder."""
+    print(f"💻 [Backend] calculate_and_save_cart başlatıldı")
+    print(f"📦 [Backend] Cart doc type: {type(cart_doc)}")
+    print(f"📊 [Backend] Cart doc keys: {cart_doc.keys() if cart_doc else 'None'}")
+    
     # cart_doc None kontrolü
     if cart_doc is None:
+        print(f"⚠️ [Backend] Cart doc None - boş sepet döndürülüyor")
         return {
             "id": "empty",
             "items": [],
@@ -78,9 +88,13 @@ async def calculate_and_save_cart(cart_doc: dict, db: DBDep) -> dict:
     subtotal = 0
     valid_items = []
 
+    print(f"🛍️ [Backend] Sepetteki item sayısı: {len(cart_doc.get('items', []))}")
+    
     # Ürünleri tek seferde çekmek için ID listesi
     product_ids = [ObjectId(item['product']) for item in cart_doc.get('items', []) 
                   if 'product' in item and ObjectId.is_valid(str(item['product']))]
+    
+    print(f"🔍 [Backend] Product ID'ler: {product_ids}")
 
     # Veritabanından ilgili ürünleri çek
     product_docs = {}
@@ -334,15 +348,22 @@ async def get_cart(request: Request, response: Response, db: DBDep):
         if "sessionId" in cart_identifier:
             session_id = cart_identifier["sessionId"]
             print(f"🍪 [GET] Session ID cookie ZORLA ayarlanıyor: {session_id}")
+            
+            # Environment'a göre cookie ayarları
+            is_production = settings.ALLOWED_ORIGINS_STR.find('localhost') == -1
+            print(f"🏭 [Backend] Is production: {is_production}")
+            print(f"🔧 [Backend] Allowed origins: {settings.ALLOWED_ORIGINS_STR}")
+            
             response.set_cookie(
                 key="cartSessionId", 
                 value=session_id, 
                 max_age=60*60*24*30,  # 30 gün
                 httponly=False,       # Frontend'in cookie'ye erişebilmesi için 
-                samesite='lax',
-                secure=False,         # HTTPS olmadığı için False
-                path="/"              # Tüm path'lerde geçerli
+                samesite='none' if is_production else 'lax',
+                secure=is_production,  # Production'da secure, development'te False
+                path="/",             # Tüm path'lerde geçerli
             )
+            print(f"✅ [Backend] Cookie ayarlandı - Session ID: {session_id}, SameSite: {'none' if is_production else 'lax'}, Secure: {is_production}")
 
         # Session ID veya user ile sepeti bul
         cart_doc = None
@@ -468,15 +489,22 @@ async def add_item_to_cart(item_data: AddToCartRequest, request: Request, respon
         if "sessionId" in cart_identifier:
             session_id = cart_identifier["sessionId"]
             print(f"🍪 Session ID cookie ZORLA ayarlanıyor: {session_id}")
+            
+            # Environment'a göre cookie ayarları
+            is_production = settings.ALLOWED_ORIGINS_STR.find('localhost') == -1
+            print(f"🏭 [Backend] Is production: {is_production}")
+            print(f"🔧 [Backend] Allowed origins: {settings.ALLOWED_ORIGINS_STR}")
+            
             response.set_cookie(
                 key="cartSessionId",
                 value=session_id,
                 max_age=60*60*24*30,  # 30 gün
                 httponly=False,       # Frontend'in cookie'ye erişebilmesi için
-                samesite='lax',
-                secure=False,         # HTTPS olmadığı için False
-                path="/"              # Tüm path'lerde geçerli
+                samesite='none' if is_production else 'lax',
+                secure=is_production,  # Production'da secure, development'te False
+                path="/",             # Tüm path'lerde geçerli
             )
+            print(f"✅ [Backend] Cookie ayarlandı - Session ID: {session_id}, SameSite: {'none' if is_production else 'lax'}, Secure: {is_production}")
 
         # Sepetteki item'ı bul veya oluştur
         item_index = -1
